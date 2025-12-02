@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>棒球小遊戲 (實況版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            touch-action: manipulation;
+            overflow: hidden; 
+            cursor: none; /* 隱藏系統滑鼠，使用自訂的打擊框 */
+        }
+        .scoreboard-font {
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .led-light {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: #333;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+            transition: all 0.2s;
+        }
+        .led-light.active {
+            background-color: #fefcbf;
+            box-shadow: 0 0 10px #fefcbf, 0 0 20px #fefcbf, inset 0 2px 4px rgba(0,0,0,0.5);
+        }
+        .btn {
+            @apply w-full py-3 px-4 rounded-lg text-lg font-bold transition-transform duration-100 active:scale-95 shadow-md disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
+        }
+        .btn-action { @apply bg-blue-600 text-white hover:bg-blue-700; }
+        .btn-danger { @apply bg-red-600 text-white hover:bg-red-700; }
+        .btn-secondary { @apply bg-gray-500 text-white hover:bg-gray-600; }
+        .diamond {
+            position: relative;
+            width: 80px;
+            height: 80px;
+            margin: auto;
+        }
+        .base {
+            position: absolute;
+            width: 28px;
+            height: 28px;
+            background-color: #333;
+            border: 2px solid #555;
+            transform: rotate(45deg);
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
+            transition: background-color 0.2s, border-color 0.2s;
+        }
+        .base.occupied {
+            background-color: #fefcbf;
+            box-shadow: 0 0 10px #fefcbf, inset 0 1px 2px rgba(0,0,0,0.5);
+            border-color: #fff;
+        }
+        #base-2 { top: 0; left: 50%; transform: translateX(-50%) rotate(45deg); }
+        #base-3 { top: 50%; left: 0; transform: translateY(-50%) rotate(45deg); }
+        #base-1 { top: 50%; right: 0; transform: translateY(-50%) rotate(45deg); }
+        #game-log {
+            scroll-behavior: smooth;
+        }
+        #game-log p { @apply border-b border-gray-600 p-2; }
+        #game-log p:first-child { @apply text-yellow-300; }
+        
+        #three-canvas-container {
+            position: relative;
+            width: 100%;
+            height: 400px; /* Mobile 高度 */
+            border-radius: 0.5rem;
+            overflow: hidden;
+            cursor: none; /* 確保畫布上也隱藏 */
+        }
+        #three-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        @media (min-width: 1024px) {
+            #app-container {
+                height: calc(100vh - 4rem);
+            }
+            #three-canvas-container {
+                height: 100%;
+            }
+            #ui-container {
+                height: 100%;
+                overflow-y: auto;
+            }
+        }
+        
+        /* 實況野球風格打擊 UI (取代時機條) */
+        #strike-zone-overlay {
+            position: absolute;
+            inset: 0;
+            z-10;
+            pointer-events: none; /* 允許點擊穿透到 canvas */
+            display: none; /* 預設隱藏 */
+        }
+        #strike-zone-overlay.visible {
+            display: block;
+        }
+        /* 好球帶視覺框 */
+        #strike-zone-box {
+            position: absolute;
+            width: 100px;
+            height: 150px;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            border: 2px dashed rgba(255,255,255,0.5);
+            display: none; /* 預設隱藏，投球時顯示 */
+        }
+        /* 投手投球點 (會短暫顯示) */
+        #pitch-target {
+            position: absolute;
+            width: 40px; /* 稍大一點 */
+            height: 40px;
+            background-color: rgba(239, 68, 68, 0.8); /* bg-red-500 */
+            border-radius: 50%;
+            border: 2px solid white;
+            transform: translate(-50%, -50%);
+            display: none; /* 預設隱藏 */
+        }
+        /* 玩家打擊框 */
+        #batting-cursor {
+            position: absolute;
+            width: 64px; /* 4rem */
+            height: 64px;
+            border: 4px solid #facc15; /* border-yellow-300 */
+            border-radius: 50%;
+            opacity: 0.75;
+            transform: translate(-50%, -50%);
+            /* JS 會控制 left/top */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white p-4 md:p-8 flex items-center justify-center min-h-screen">
+
+    <!-- 遊戲 Modal (取代 prompt) -->
+    <div id="setup-modal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+        <!-- ... (Modal HTML 保持不變) ... -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
+            <h2 class="text-2xl font-bold mb-4 text-yellow-300">歡迎來到棒球小遊戲！</h2>
+            <p class="mb-4">請輸入你（主隊）和電腦（客隊）的隊名。</p>
+            <div class="mb-4">
+                <label for="visitor-name-input" class="block text-sm font-medium text-gray-300 mb-1">客隊 (電腦)</label>
+                <input type="text" id="visitor-name-input" value="GUEST" class="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-yellow-400">
+            </div>
+            <div class="mb-6">
+                <label for="home-name-input" class="block text-sm font-medium text-gray-300 mb-1">主隊 (你)</label>
+                <input type="text" id="home-name-input" value="HOME" class="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-yellow-400">
+            </div>
+            <button id="start-game-btn" class="btn btn-action w-full">開始比賽！</button>
+        </div>
+    </div>
+    
+    <!-- 遊戲結束 Modal -->
+    <div id="game-over-modal" class="fixed inset-0 bg-black bg-opacity-75 flex-col items-center justify-center z-50 p-4 hidden">
+        <!-- ... (Modal HTML 保持不變) ... -->
+        <div class="bg-gray-800 p-8 rounded-lg shadow-xl w-full max-w-md text-center">
+            <h2 class="text-3xl font-bold mb-4 text-yellow-300">比賽結束！</h2>
+            <p id="game-result-text" class="text-xl mb-6">主隊獲勝！</p>
+            <button id="play-again-btn" class="btn btn-action w-full">再玩一場</button>
+        </div>
+    </div>
+
+    <!-- 
+      新的 3D 佈局 
+    -->
+    <div id="app-container" class="w-full max-w-7xl bg-gray-800 rounded-2xl shadow-2xl p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-5 gap-6">
+        
+        <!-- 3D 畫布欄 -->
+        <div class="lg:col-span-3 flex flex-col">
+            <h2 class="text-xl font-bold text-yellow-300 mb-4 text-center">3D 球場狀態</h2>
+            <div id="three-canvas-container" class="bg-gray-900 flex-grow">
+                <canvas id="three-canvas"></canvas>
+                <!-- 實況野球風格打擊 UI -->
+                <div id="strike-zone-overlay">
+                    <div id="strike-zone-box"></div>
+                    <div id="pitch-target"></div>
+                    <div id="batting-cursor"></div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- UI 介面欄 -->
+        <div id="ui-container" class="lg:col-span-2 flex flex-col">
+            <header class="flex justify-between items-center mb-4 flex-shrink-0">
+                <h1 class="text-2xl sm:text-3xl font-bold text-yellow-300">棒球小遊戲</h1>
+                <button id="reset-game" class="py-2 px-4 rounded-lg text-base font-bold border border-yellow-300 text-yellow-300 hover:bg-yellow-300 hover:text-gray-900 transition-colors duration-200 active:scale-95">重啟遊戲</button>
+            </header>
+
+            <!-- 計分板 -->
+            <main class="bg-green-800 border-4 border-yellow-300 p-4 rounded-lg mb-6 scoreboard-font flex-shrink-0">
+                <!-- ... (計分板 HTML 保持不變) ... -->
+                <div class="grid grid-cols-12 text-center text-sm sm:text-lg font-bold mb-2">
+                    <div class="col-span-2">隊伍</div>
+                    <div class="col-span-7" id="innings-header">
+                        <div class="grid grid-cols-9">
+                            <div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div><div>9</div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 col-span-3">
+                        <div>R</div><div>H</div><div>E</div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-12 text-center items-center text-xl sm:text-3xl font-bold bg-gray-900 rounded p-2 mb-1">
+                    <div class="col-span-2 text-left pl-2 text-base sm:text-xl truncate" id="visitor-name">GUEST</div>
+                    <div class="col-span-7">
+                        <div id="visitor-innings" class="grid grid-cols-9"></div>
+                    </div>
+                    <div class="grid grid-cols-3 col-span-3">
+                        <div id="visitor-R">0</div><div id="visitor-H">0</div><div id="visitor-E">0</div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-12 text-center items-center text-xl sm:text-3xl font-bold bg-gray-900 rounded p-2">
+                     <div class="col-span-2 text-left pl-2 text-base sm:text-xl truncate" id="home-name">HOME</div>
+                     <div class="col-span-7">
+                        <div id="home-innings" class="grid grid-cols-9"></div>
+                    </div>
+                    <div class="grid grid-cols-3 col-span-3">
+                        <div id="home-R">0</div><div id="home-H">0</div><div id="home-E">0</div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- 目前狀態顯示 -->
+            <section class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6 flex-shrink-0">
+                <!-- ... (BSO HTML 保持不變) ... -->
+                <div class="bg-gray-700 p-4 rounded-lg text-center flex flex-col justify-around">
+                    <div>
+                        <p class="text-sm text-gray-400 mb-2">INNING</p>
+                        <div id="inning-display" class="text-3xl font-bold text-yellow-300">1 ▲</div>
+                    </div>
+                    <div>
+                        <p class="text-sm text-gray-400 mt-3 mb-2">B-S-O</p>
+                        <div class="flex justify-center items-center space-x-3">
+                            <div>
+                                <p class="text-xs">B</p>
+                                <div class="flex space-x-1">
+                                    <div id="b1" class="led-light"></div><div id="b2" class="led-light"></div><div id="b3" class="led-light"></div><div id="b4" class="led-light"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <p class="text-xs">S</p>
+                                <div class="flex space-x-1">
+                                     <div id="s1" class="led-light"></div><div id="s2" class="led-light"></div><div id="s3" class="led-light"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <p class="text-xs">O</p>
+                                 <div class="flex space-x-1">
+                                     <div id="o1" class="led-light"></div><div id="o2" class="led-light"></div><div id="o3" class="led-light"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- ... (上壘狀態 2D HTML 保持不變) ... -->
+                <div class="bg-gray-700 p-4 rounded-lg text-center flex flex-col justify-center">
+                    <p class="text-sm text-gray-400 mb-2">上壘跑者 (2D)</p>
+                    <div class="diamond flex-grow">
+                        <div id="base-2" class="base" title="二壘"></div>
+                        <div id="base-3" class="base" title="三壘"></div>
+                        <div id="base-1" class="base" title="一壘"></div>
+                    </div>
+                </div>
+                <!-- ... (戰況紀錄 HTML 保持不變) ... -->
+                <div class="bg-gray-700 p-4 rounded-lg flex flex-col">
+                    <p class="text-sm text-gray-400 mb-2 text-center">戰況紀錄</p>
+                    <div id="game-log" class="flex-grow bg-gray-800 rounded-md h-32 overflow-y-auto text-sm scoreboard-font">
+                    </div>
+                </div>
+            </section>
+
+            <!-- 控制說明 -->
+            <div class="text-center text-yellow-300 mb-4 p-4 bg-gray-700 rounded-lg">
+                <p>輪到你打擊時：</p>
+                <p>1. 按下 [投球] 按鈕</p>
+                <p>2. 用 [滑鼠] 移動打擊框</p>
+                <p>3. 抓準時機和落點 [點擊] 揮棒！</p>
+            </div>
+
+            <!-- 控制按鈕 -->
+            <footer class="grid grid-cols-1 gap-4 flex-shrink-0">
+                <button id="btn-pitch" class="btn btn-action">投球 (Pitch)</button>
+            </footer>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const MAX_INNINGS_REGULAR = 9;
+            let gameState = {};
+
+            // --- 3D 變數 ---
+            let scene, camera, renderer, fieldMesh;
+            let runners = []; // [runner1B, runner2B, runner3B]
+            let batterMesh, ballMesh, moundMesh;
+            let homePlatePosition = new THREE.Vector3(0, 0, 0); // 本壘板在 (0,0,0)
+            let moundPosition = new THREE.Vector3(0, 1, -60); // 投手丘位置
+            const FIELD_WIDTH = 200;
+            const FIELD_DEPTH = 200;
+            const BASE_DISTANCE = 60; 
+
+            // --- 動作遊戲變數 ---
+            const PITCH_DURATION_MS = 1200; // 球飛行的總時間 (加快)
+            const PITCH_VISIBLE_MS = 800;   // 投球點顯示時間
+            const SWING_WINDOW_START = 0.8; // 80% (0.8 * 1200 = 960ms)
+            const SWING_WINDOW_END = 1.0;   // 100% (1.0 * 1200 = 1200ms)
+            const HIT_GOOD_DISTANCE = 10;   // 擊中判定的容許範圍 (百分比)
+
+            // --- DOM 元素 ---
+            const elements = {
+                setupModal: document.getElementById('setup-modal'),
+                gameOverModal: document.getElementById('game-over-modal'),
+                visitorNameInput: document.getElementById('visitor-name-input'),
+                homeNameInput: document.getElementById('home-name-input'),
+                startGameBtn: document.getElementById('start-game-btn'),
+                gameResultText: document.getElementById('game-result-text'),
+                playAgainBtn: document.getElementById('play-again-btn'),
+                canvasContainer: document.getElementById('three-canvas-container'),
+                canvas: document.getElementById('three-canvas'),
+                // 實況 UI
+                strikeZoneOverlay: document.getElementById('strike-zone-overlay'),
+                strikeZoneBox: document.getElementById('strike-zone-box'),
+                pitchTarget: document.getElementById('pitch-target'),
+                battingCursor: document.getElementById('batting-cursor'),
+                
+                visitorName: document.getElementById('visitor-name'),
+                homeName: document.getElementById('home-name'),
+                visitorInnings: document.getElementById('visitor-innings'),
+                homeInnings: document.getElementById('home-innings'),
+                visitorR: document.getElementById('visitor-R'),
+                visitorH: document.getElementById('visitor-H'),
+                visitorE: document.getElementById('visitor-E'),
+                homeR: document.getElementById('home-R'),
+                homeH: document.getElementById('home-H'),
+                homeE: document.getElementById('home-E'),
+                inningDisplay: document.getElementById('inning-display'),
+                inningsHeader: document.getElementById('innings-header'),
+                base1: document.getElementById('base-1'),
+                base2: document.getElementById('base-2'),
+                base3: document.getElementById('base-3'),
+                gameLog: document.getElementById('game-log'),
+                resetBtn: document.getElementById('reset-game'),
+                btnPitch: document.getElementById('btn-pitch'),
+            };
+
+            // --- 3D 初始化 ---
+            function initThreeJS() {
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x334155); 
+                
+                // *** 攝影機改為打者視角 ***
+                camera = new THREE.PerspectiveCamera(50, elements.canvasContainer.clientWidth / elements.canvasContainer.clientHeight, 0.1, 1000);
+                camera.position.set(0, 20, 35); // 在本壘板後方、稍高
+                camera.lookAt(0, 10, -60); // 看向投手丘
+                
+                renderer = new THREE.WebGLRenderer({ canvas: elements.canvas, antialias: true });
+                renderer.setSize(elements.canvasContainer.clientWidth, elements.canvasContainer.clientHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                renderer.shadowMap.enabled = true;
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+                scene.add(ambientLight);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+                directionalLight.position.set(-20, 50, 20);
+                directionalLight.castShadow = true;
+                scene.add(directionalLight);
+
+                createField();
+                animate();
+
+                const observer = new ResizeObserver(onCanvasResize);
+                observer.observe(elements.canvasContainer);
+            }
+
+            // --- 新增：建立 SD 角色 ---
+            function createSDCharacter(color) {
+                const group = new THREE.Group();
+                
+                // 身體
+                const bodyGeo = new THREE.CylinderGeometry(3, 3, 6, 32);
+                const bodyMat = new THREE.MeshStandardMaterial({ color: color });
+                const body = new THREE.Mesh(bodyGeo, bodyMat);
+                body.position.y = 3;
+                body.castShadow = true;
+                group.add(body);
+
+                // 頭
+                const headGeo = new THREE.SphereGeometry(4, 32, 16);
+                const headMat = new THREE.MeshStandardMaterial({ color: 0xffe0bd }); // 膚色
+                const head = new THREE.Mesh(headGeo, headMat);
+                head.position.y = 8;
+                head.castShadow = true;
+                group.add(head);
+                
+                // 帽子 (半球體)
+                const capGeo = new THREE.SphereGeometry(4.2, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+                const capMat = new THREE.MeshStandardMaterial({ color: color });
+                const cap = new THREE.Mesh(capGeo, capMat);
+                cap.position.y = 8;
+                cap.castShadow = true;
+                group.add(cap);
+                
+                // (可選) 腳
+                const footGeo = new THREE.SphereGeometry(1.5, 16, 8);
+                const footMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+                const leftFoot = new THREE.Mesh(footGeo, footMat);
+                leftFoot.position.set(-2, 1, 1);
+                group.add(leftFoot);
+                const rightFoot = new THREE.Mesh(footGeo, footMat);
+                rightFoot.position.set(2, 1, 1);
+                group.add(rightFoot);
+
+                return group;
+            }
+
+            function createField() {
+                const fieldGeo = new THREE.PlaneGeometry(FIELD_WIDTH, FIELD_DEPTH);
+                const fieldMat = new THREE.MeshLambertMaterial({ color: 0x228B22 });
+                fieldMesh = new THREE.Mesh(fieldGeo, fieldMat);
+                fieldMesh.rotation.x = -Math.PI / 2;
+                fieldMesh.receiveShadow = true;
+                scene.add(fieldMesh);
+
+                const baseSize = 5;
+                const baseGeo = new THREE.BoxGeometry(baseSize, 1, baseSize);
+                const baseMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+                
+                const homePlate = new THREE.Mesh(baseGeo, baseMat);
+                homePlate.position.copy(homePlatePosition);
+                scene.add(homePlate);
+                
+                const base1B = new THREE.Mesh(baseGeo, baseMat);
+                base1B.position.set(BASE_DISTANCE / Math.sqrt(2), 0, -BASE_DISTANCE / Math.sqrt(2));
+                scene.add(base1B);
+                const base2B = new THREE.Mesh(baseGeo, baseMat);
+                base2B.position.set(0, 0, -BASE_DISTANCE * Math.sqrt(2));
+                scene.add(base2B);
+                const base3B = new THREE.Mesh(baseGeo, baseMat);
+                base3B.position.set(-BASE_DISTANCE / Math.sqrt(2), 0, -BASE_DISTANCE / Math.sqrt(2));
+                scene.add(base3B);
+
+                const moundGeo = new THREE.CylinderGeometry(8, 10, 2, 32);
+                const moundMat = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+                moundMesh = new THREE.Mesh(moundGeo, moundMat);
+                moundMesh.position.copy(moundPosition);
+                scene.add(moundMesh);
+
+                // *** 使用 SD 角色 ***
+                const runner1 = createSDCharacter(0xfefcbf);
+                runner1.position.set(base1B.position.x, 0, base1B.position.z);
+                runner1.visible = false;
+                scene.add(runner1); runners.push(runner1);
+
+                const runner2 = createSDCharacter(0xfefcbf);
+                runner2.position.set(base2B.position.x, 0, base2B.position.z);
+                runner2.visible = false;
+                scene.add(runner2); runners.push(runner2);
+
+                const runner3 = createSDCharacter(0xfefcbf);
+                runner3.position.set(base3B.position.x, 0, base3B.position.z);
+                runner3.visible = false;
+                scene.add(runner3); runners.push(runner3);
+
+                batterMesh = createSDCharacter(0x2563eb);
+                batterMesh.position.set(homePlate.position.x + 5, 0, homePlate.position.z + 5); 
+                batterMesh.visible = false;
+                scene.add(batterMesh);
+
+                // 球
+                const ballGeo = new THREE.SphereGeometry(1, 16, 16);
+                const ballMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+                ballMesh = new THREE.Mesh(ballGeo, ballMat);
+                ballMesh.position.copy(moundPosition);
+                ballMesh.position.y = 5; 
+                ballMesh.castShadow = true;
+                ballMesh.visible = false;
+                scene.add(ballMesh);
+            }
+
+            function onCanvasResize(entries) {
+                if (!entries || entries.length === 0) return;
+                const entry = entries[0];
+                const { width, height } = entry.contentRect;
+                renderer.setSize(width, height);
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+            }
+
+            // --- 3D 動畫循環 ---
+            function animate() {
+                requestAnimationFrame(animate);
+
+                // 球飛行
+                if (gameState.pitchInFlight) {
+                    const elapsedTime = Date.now() - gameState.pitchStartTime;
+                    let progress = elapsedTime / PITCH_DURATION_MS;
+                    
+                    if (progress >= 1) {
+                        progress = 1;
+                        handlePitchEnd(); // 飛行結束 (沒揮棒)
+                    }
+                    
+                    ballMesh.position.lerpVectors(moundPosition, homePlatePosition, progress);
+                    ballMesh.position.y = 5 + Math.sin(progress * Math.PI) * 10;
+                }
+
+                renderer.render(scene, camera);
+            }
+
+            // --- 遊戲邏輯 (與 3D 掛鉤) ---
+
+            function initGame() {
+                gameState = {
+                    inning: 1, isTop: true, balls: 0, strikes: 0, outs: 0,
+                    bases: [false, false, false], 
+                    maxInnings: MAX_INNINGS_REGULAR,
+                    scores: {
+                        visitor: Array(MAX_INNINGS_REGULAR).fill(null),
+                        home: Array(MAX_INNINGS_REGULAR).fill(null),
+                    },
+                    totals: {
+                        visitor: { R: 0, H: 0, E: 0 },
+                        home: { R: 0, H: 0, E: 0 },
+                    },
+                    isGameOver: false, isSimulating: false,
+                    // 動作遊戲狀態
+                    pitchInFlight: false,
+                    pitchStartTime: 0,
+                    canSwing: false,
+                    pitchType: 'strike',
+                    pitchTargetPos: { x: 50, y: 50 }, // %
+                    battingCursorPos: { x: 50, y: 50 }, // %
+                };
+                
+                elements.gameLog.innerHTML = '';
+                elements.gameOverModal.classList.add('hidden');
+                elements.setupModal.classList.remove('hidden');
+                
+                if (!scene) {
+                    initThreeJS();
+                }
+
+                updateAllDisplays();
+            }
+
+            function startGame() {
+                const visitor = elements.visitorNameInput.value || "GUEST";
+                const home = elements.homeNameInput.value || "HOME";
+                elements.visitorName.textContent = visitor;
+                elements.homeName.textContent = home;
+                elements.setupModal.classList.add('hidden');
+                logMessage(`--- 比賽開始！ ---`);
+                logMessage(`--- 1局上半，${visitor}進攻 ---`);
+                setTimeout(simulateOpponentTurn, 1000);
+            }
+            
+            function logMessage(message) {
+                const p = document.createElement('p');
+                p.textContent = message;
+                elements.gameLog.prepend(p);
+                elements.gameLog.scrollTop = 0;
+            }
+
+            function updateAllDisplays() {
+                updateScoreboard();
+                updateBSO();
+                updateBasesDisplay();
+                updateInningDisplay();
+                updateTotals();
+                updateButtonStates();
+            }
+
+            function updateScoreboard() {
+                // ... (updateScoreboard 邏輯不變) ...
+                elements.visitorInnings.innerHTML = '';
+                elements.homeInnings.innerHTML = '';
+                elements.inningsHeader.querySelector('div').innerHTML = '';
+                for (let i = 0; i < gameState.maxInnings; i++) {
+                    const vScore = gameState.scores.visitor[i];
+                    const hScore = gameState.scores.home[i];
+                    elements.inningsHeader.querySelector('div').innerHTML += `<div>${i+1}</div>`;
+                    const vInnDiv = document.createElement('div');
+                    vInnDiv.textContent = vScore === null ? '' : vScore;
+                    if(i === gameState.inning -1 && gameState.isTop) vInnDiv.classList.add('text-yellow-300', 'animate-pulse');
+                    elements.visitorInnings.appendChild(vInnDiv);
+                    const hInnDiv = document.createElement('div');
+                    hInnDiv.textContent = hScore === null ? '' : hScore;
+                    if(i === gameState.inning -1 && !gameState.isTop) hInnDiv.classList.add('text-yellow-300', 'animate-pulse');
+                    elements.homeInnings.appendChild(hInnDiv);
+                }
+                elements.visitorInnings.className = `grid grid-cols-${gameState.maxInnings}`;
+                elements.homeInnings.className = `grid grid-cols-${gameState.maxInnings}`;
+                elements.inningsHeader.querySelector('div').className = `grid grid-cols-${gameState.maxInnings}`;
+            }
+
+            function updateTotals() {
+                // ... (updateTotals 邏輯不變) ...
+                elements.visitorR.textContent = gameState.totals.visitor.R;
+                elements.visitorH.textContent = gameState.totals.visitor.H;
+                elements.visitorE.textContent = gameState.totals.visitor.E;
+                elements.homeR.textContent = gameState.totals.home.R;
+                elements.homeH.textContent = gameState.totals.home.H;
+                elements.homeE.textContent = gameState.totals.home.E;
+            }
+
+            function updateInningDisplay() {
+                // ... (updateInningDisplay 邏輯不變) ...
+                if (gameState.isGameOver) {
+                    elements.inningDisplay.innerHTML = `比賽<br>結束`;
+                    elements.inningDisplay.classList.add('text-red-500');
+                    return;
+                }
+                elements.inningDisplay.classList.remove('text-red-500');
+                const arrow = gameState.isTop ? '▲' : '▼';
+                elements.inningDisplay.textContent = `${gameState.inning} ${arrow}`;
+            }
+
+            function updateBSO() {
+                // ... (updateBSO 邏輯不變) ...
+                ['b1','b2','b3','b4'].forEach((id, i) => document.getElementById(id).classList.toggle('active', i < gameState.balls));
+                ['s1','s2','s3'].forEach((id, i) => document.getElementById(id).classList.toggle('active', i < gameState.strikes));
+                ['o1','o2','o3'].forEach((id, i) => document.getElementById(id).classList.toggle('active', i < gameState.outs));
+            }
+
+            function updateBasesDisplay() {
+                // ... (updateBasesDisplay 邏輯不變, 2D + 3D) ...
+                elements.base1.classList.toggle('occupied', gameState.bases[0]);
+                elements.base2.classList.toggle('occupied', gameState.bases[1]);
+                elements.base3.classList.toggle('occupied', gameState.bases[2]);
+                if (runners.length === 3) {
+                    runners[0].visible = gameState.bases[0];
+                    runners[1].visible = gameState.bases[1];
+                    runners[2].visible = gameState.bases[2];
+                }
+            }
+
+            function updateButtonStates() {
+                const canPitch = !gameState.isGameOver && !gameState.isSimulating && !gameState.isTop && !gameState.pitchInFlight;
+                elements.btnPitch.disabled = !canPitch;
+                if (batterMesh) {
+                    batterMesh.visible = !gameState.isTop && !gameState.isGameOver;
+                }
+            }
+            
+            function resetBSO() {
+                gameState.balls = 0;
+                gameState.strikes = 0;
+            }
+
+            // --- 新：動作遊戲邏輯 (實況風格) ---
+
+            // 玩家按下「投球」按鈕
+            function handlePitchStart() {
+                if (elements.btnPitch.disabled) return;
+
+                gameState.pitchInFlight = true;
+                gameState.pitchStartTime = Date.now();
+                gameState.canSwing = true;
+                
+                // 決定投球落點 (百分比)
+                const isStrike = Math.random() < 0.7; // 70% 好球
+                gameState.pitchType = isStrike ? 'strike' : 'ball';
+                
+                const sz_x = 50, sz_y = 50, sz_w = 20, sz_h = 30; // 好球帶中心, 寬, 高 (%)
+                let x, y;
+                if (isStrike) {
+                    // 投在好球帶內
+                    x = sz_x + (Math.random() - 0.5) * sz_w;
+                    y = sz_y + (Math.random() - 0.5) * sz_h;
+                } else {
+                    // 投在好球帶外 (壞球)
+                    const side = Math.floor(Math.random() * 4);
+                    if (side === 0) { // 上
+                        x = sz_x + (Math.random() - 0.5) * (sz_w + 10);
+                        y = sz_y - (sz_h / 2) - 5 - (Math.random() * 10);
+                    } else if (side === 1) { // 下
+                        x = sz_x + (Math.random() - 0.5) * (sz_w + 10);
+                        y = sz_y + (sz_h / 2) + 5 + (Math.random() * 10);
+                    } else if (side === 2) { // 左
+                        x = sz_x - (sz_w / 2) - 5 - (Math.random() * 10);
+                        y = sz_y + (Math.random() - 0.5) * (sz_h + 10);
+                    } else { // 右
+                        x = sz_x + (sz_w / 2) + 5 + (Math.random() * 10);
+                        y = sz_y + (Math.random() - 0.5) * (sz_h + 10);
+                    }
+                }
+                gameState.pitchTargetPos = { x: x, y: y };
+
+                // 顯示打擊 UI
+                elements.strikeZoneOverlay.classList.add('visible');
+                elements.strikeZoneBox.style.display = 'block';
+                elements.pitchTarget.style.left = `${x}%`;
+                elements.pitchTarget.style.top = `${y}%`;
+                elements.pitchTarget.style.display = 'block';
+
+                // 啟動 3D 球
+                ballMesh.position.copy(moundPosition);
+                ballMesh.position.y = 5;
+                ballMesh.visible = true;
+
+                // 短暫顯示落點後隱藏
+                setTimeout(() => {
+                    elements.pitchTarget.style.display = 'none';
+                }, PITCH_VISIBLE_MS);
+
+                updateButtonStates(); // 禁用「投球」按鈕
+            }
+            
+            // 玩家「點擊」揮棒
+            function handleSwing() {
+                if (!gameState.canSwing || !gameState.pitchInFlight) return;
+
+                gameState.canSwing = false;
+                gameState.pitchInFlight = false; // 揮棒結束投球
+                
+                // 立即隱藏 UI 和球
+                ballMesh.visible = false;
+                elements.strikeZoneOverlay.classList.remove('visible');
+                elements.strikeZoneBox.style.display = 'none';
+
+                const elapsedTime = Date.now() - gameState.pitchStartTime;
+                const progress = elapsedTime / PITCH_DURATION_MS;
+
+                // 1. 判斷時機
+                const isGoodTiming = progress >= SWING_WINDOW_START && progress <= SWING_WINDOW_END;
+
+                // 2. 判斷位置
+                const dx = gameState.battingCursorPos.x - gameState.pitchTargetPos.x;
+                const dy = gameState.battingCursorPos.y - gameState.pitchTargetPos.y;
+                const distance = Math.sqrt(dx*dx + dy*dy);
+                const isGoodLocation = distance < HIT_GOOD_DISTANCE;
+
+                // 3. 判斷結果
+                if (isGoodTiming && isGoodLocation) {
+                    logMessage("擊中了！");
+                    handlePlayerHit();
+                } else if (isGoodTiming && !isGoodLocation) {
+                    logMessage("打成界外球！ (好球)");
+                    incrementStrike(true); // 傳入 true 代表是揮棒導致的好球
+                } else {
+                    logMessage("揮棒落空！ 好球！");
+                    incrementStrike(true);
+                }
+                
+                updateBSO();
+                updateButtonStates();
+            }
+
+            // 投球動畫結束 (玩家*未*揮棒)
+            function handlePitchEnd() {
+                if (!gameState.pitchInFlight) return; // 揮棒時已經處理過了
+
+                gameState.pitchInFlight = false;
+                ballMesh.visible = false;
+                elements.strikeZoneOverlay.classList.remove('visible');
+                elements.strikeZoneBox.style.display = 'none';
+
+                logMessage("觀望...");
+                if (gameState.pitchType === 'strike') {
+                    logMessage("進壘！ 好球！");
+                    incrementStrike(false); // 傳入 false 代表是觀望
+                } else {
+                    logMessage("壞球！");
+                    incrementBall();
+                }
+                
+                updateBSO();
+                updateButtonStates();
+            }
+
+            // 滑鼠移動，更新打擊框
+            function handleCursorMove(e) {
+                const rect = elements.canvasContainer.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const xPct = (x / rect.width) * 100;
+                const yPct = (y / rect.height) * 100;
+
+                gameState.battingCursorPos = { x: xPct, y: yPct };
+                elements.battingCursor.style.left = `${xPct}%`;
+                elements.battingCursor.style.top = `${yPct}%`;
+            }
+
+
+            // --- 核心遊戲邏輯 (微調) ---
+
+            function handlePlayerHit() {
+                // ... (handlePlayerHit 邏輯不變) ...
+                resetBSO();
+                const hitType = Math.random();
+                if (hitType < 0.08) { handleHomeRun('home'); }
+                else if (hitType < 0.15) { logMessage("三壘安打！"); advanceRunners(3, 'home'); addStat('H', 'home'); }
+                else if (hitType < 0.25) { logMessage("二壘安打！"); advanceRunners(2, 'home'); addStat('H', 'home'); }
+                else if (hitType < 0.55) { logMessage("一壘安打！"); advanceRunners(1, 'home'); addStat('H', 'home'); }
+                else {
+                    logMessage("滾地球/高飛球出局！");
+                    if (Math.random() < 0.1) {
+                        logMessage("...啊！ 對方失誤了！ 安全上壘！");
+                        addStat('E', 'visitor');
+                        advanceRunners(1, 'home');
+                    } else {
+                        incrementOut();
+                    }
+                }
+            }
+            
+            function incrementStrike(didSwing) {
+                // 兩好球前的界外球不算好球 (didSwing = true, isGoodLocation = false)
+                // 實況簡化版：我們暫時不判斷界外，只要揮棒沒打好就是好球
+                
+                gameState.strikes++;
+                if (gameState.strikes >= 3) {
+                    logMessage("三振出局！");
+                    incrementOut();
+                }
+            }
+            
+            function incrementBall() {
+                gameState.balls++;
+                if (gameState.balls >= 4) {
+                    logMessage("四壞球保送！");
+                    handleWalk('home');
+                }
+            }
+            
+            function handleWalk(team) {
+                // ... (handleWalk 邏輯不變) ...
+                let runs = 0;
+                if (gameState.bases[0] && gameState.bases[1] && gameState.bases[2]) { runs++; }
+                if (gameState.bases[0] && gameState.bases[1]) { gameState.bases[2] = true; }
+                if (gameState.bases[0]) { gameState.bases[1] = true; }
+                gameState.bases[0] = true;
+                if (runs > 0) { logMessage(`擠回 ${runs} 分！`); addRun(team, runs); }
+                resetBSO();
+                updateBasesDisplay();
+            }
+
+            function handleHomeRun(team) {
+                // ... (handleHomeRun 邏輯不變) ...
+                let runs = 1;
+                if (gameState.bases[0]) { runs++; gameState.bases[0] = false; }
+                if (gameState.bases[1]) { runs++; gameState.bases[1] = false; }
+                if (gameState.bases[2]) { runs++; gameState.bases[2] = false; }
+                logMessage(`全壘打！ 這是一支 ${runs} 分砲！`);
+                addRun(team, runs);
+                if (team === 'home') addStat('H', 'home'); else addStat('H', 'visitor');
+                updateBasesDisplay();
+            }
+            
+            function advanceRunners(basesToAdvance, team) {
+                // ... (advanceRunners 邏輯不變) ...
+                let runs = 0;
+                if (gameState.bases[2]) { runs++; gameState.bases[2] = false; }
+                if (gameState.bases[1]) {
+                    if (basesToAdvance >= 2) runs++; else gameState.bases[2] = true;
+                    gameState.bases[1] = false;
+                }
+                if (gameState.bases[0]) {
+                    if (basesToAdvance >= 3) runs++;
+                    else if (basesToAdvance === 2) gameState.bases[2] = true;
+                    else gameState.bases[1] = true;
+                    gameState.bases[0] = false;
+                }
+                gameState.bases[basesToAdvance - 1] = true;
+                if (runs > 0) { logMessage(`得了 ${runs} 分！`); addRun(team, runs); }
+                updateBasesDisplay();
+            }
+
+            function addRun(team, amount) {
+                // ... (addRun 邏輯不變) ...
+                if(gameState.isGameOver) return;
+                const currentInningIndex = gameState.inning - 1;
+                if (gameState.scores[team][currentInningIndex] === null) {
+                    gameState.scores[team][currentInningIndex] = 0;
+                }
+                gameState.scores[team][currentInningIndex] += amount;
+                gameState.totals[team].R += amount;
+                updateTotals();
+                updateScoreboard();
+            }
+
+            function addStat(statType, team) {
+                // ... (addStat 邏輯不變) ...
+                 gameState.totals[team][statType]++;
+                 updateTotals();
+            }
+
+            function incrementOut() {
+                // ... (incrementOut 邏輯不變) ...
+                resetBSO();
+                if (gameState.outs < 2) {
+                    gameState.outs++;
+                } else {
+                    advanceHalfInning();
+                }
+                updateBSO();
+            }
+
+            function simulateOpponentTurn() {
+                // ... (simulateOpponentTurn 邏輯不變) ...
+                if (gameState.isGameOver) return;
+                gameState.isSimulating = true;
+                updateButtonStates();
+                let runs = 0; let hits = 0;
+                for(let o = 0; o < 3; o++) {
+                    const play = Math.random();
+                    if (play < 0.05) {
+                        runs += 1 + (gameState.bases[0] ? 1 : 0) + (gameState.bases[1] ? 1 : 0) + (gameState.bases[2] ? 1 : 0);
+                        gameState.bases = [false, false, false];
+                        hits++;
+                    } else if (play < 0.25) {
+                        if (gameState.bases[0] && gameState.bases[1]) runs++;
+                        if (gameState.bases[0]) gameState.bases[1] = true;
+                        gameState.bases[0] = true;
+                        hits++;
+                    } else if (play < 0.3) {
+                        if (gameState.bases[0] && gameState.bases[1]) runs++;
+                        if (gameState.bases[0]) gameState.bases[1] = true;
+                        gameState.bases[0] = true;
+                        addStat('E', 'home');
+                    }
+                }
+                gameState.bases = [false, false, false];
+                resetBSO(); gameState.outs = 0;
+                setTimeout(() => {
+                    logMessage(`對手在這半局得了 ${runs} 分, ${hits} 支安打。`);
+                    if (runs > 0) addRun('visitor', runs);
+                    addStat('H', 'visitor', hits);
+                    gameState.isSimulating = false;
+                    advanceHalfInning();
+                }, 2000);
+            }
+
+            function advanceHalfInning() {
+                // ... (advanceHalfInning 邏輯不變) ...
+                gameState.outs = 0;
+                gameState.bases = [false, false, false];
+                resetBSO();
+                if (checkForGameOver()) { return; }
+                if (gameState.isTop) {
+                    gameState.isTop = false;
+                    logMessage(`--- ${gameState.inning}局下半，${elements.homeName.textContent}進攻 ---`);
+                } else {
+                    gameState.isTop = true;
+                    gameState.inning++;
+                    if (gameState.inning > gameState.maxInnings) {
+                        gameState.maxInnings = gameState.inning;
+                        gameState.scores.visitor.push(null);
+                        gameState.scores.home.push(null);
+                    }
+                    logMessage(`--- ${gameState.inning}局上半，${elements.visitorName.textContent}進攻 ---`);
+                    setTimeout(simulateOpponentTurn, 1000);
+                }
+                updateAllDisplays(); 
+            }
+
+            function checkForGameOver() {
+                // ... (checkForGameOver 邏輯不變) ...
+                const visitorScore = gameState.totals.visitor.R;
+                const homeScore = gameState.totals.home.R;
+                let isOver = false;
+                if (gameState.inning >= MAX_INNINGS_REGULAR && !gameState.isTop) { isOver = true; }
+                if (gameState.inning >= MAX_INNINGS_REGULAR && gameState.isTop && homeScore > visitorScore) { isOver = true; }
+                if (gameState.inning > MAX_INNINGS_REGULAR && !gameState.isTop && homeScore > visitorScore) { isOver = true; }
+                if (isOver) {
+                    gameState.isGameOver = true;
+                    let resultMsg;
+                    if (homeScore > visitorScore) { resultMsg = `${elements.homeName.textContent} 獲勝！ (${homeScore} : ${visitorScore})`; }
+                    else if (visitorScore > homeScore) { resultMsg = `${elements.visitorName.textContent} 獲勝！ (${visitorScore} : ${homeScore})`; }
+                    else { resultMsg = `平手！ (${homeScore} : ${visitorScore})`; }
+                    logMessage(`--- 比賽結束！ ${resultMsg} ---`);
+                    elements.gameResultText.textContent = resultMsg;
+                    elements.gameOverModal.classList.remove('hidden');
+                    updateAllDisplays();
+                }
+                return isOver;
+            }
+
+            // --- 事件監聽 ---
+            elements.resetBtn.addEventListener('click', initGame);
+            elements.playAgainBtn.addEventListener('click', initGame);
+            elements.startGameBtn.addEventListener('click', startGame);
+            
+            // 實況風格監聽
+            elements.btnPitch.addEventListener('click', handlePitchStart);
+            elements.canvasContainer.addEventListener('click', handleSwing);
+            elements.canvasContainer.addEventListener('mousemove', handleCursorMove);
+            elements.canvasContainer.addEventListener('mouseleave', () => {
+                // 當滑鼠移出畫布時，隱藏打擊框
+                if(elements.strikeZoneOverlay.classList.contains('visible')) {
+                    elements.battingCursor.style.display = 'none';
+                }
+            });
+            elements.canvasContainer.addEventListener('mouseenter', () => {
+                if(elements.strikeZoneOverlay.classList.contains('visible')) {
+                    elements.battingCursor.style.display = 'block';
+                }
+            });
+
+
+            // 初始啟動
+            initGame();
+        });
+    </script>
+
+</body>
+</html>
